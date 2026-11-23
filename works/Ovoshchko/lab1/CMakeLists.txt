@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(CMAKE_CUDA_ARCHITECTURES 75 CACHE STRING "CUDA architectures")
+set(CMAKE_CUDA_ARCHITECTURES
+    75
+    CACHE STRING "CUDA architectures")
 project(submission LANGUAGES CXX CUDA)
 
 add_executable(submission src/main.cu src/kernels.cu)
