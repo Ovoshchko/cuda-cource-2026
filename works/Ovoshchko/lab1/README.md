@@ -2,7 +2,7 @@
 
 ## Описание
 
-`submission` выполняет Add (`x + y`), SAXPY (`2 * x + y`) и ReLU (`max(0, x)`) над векторами `float`. Каждая операция поддерживает коалесцированный и некоалесцированный доступ к глобальной памяти. Для проверки используется эталон на основе `std::transform` и арифметических операций стандартной библиотеки C++.
+`submission` выполняет Add (`x + y`), SAXPY (`alpha * x + y`) и ReLU (`max(0, x)`) над векторами `float`. Каждая операция поддерживает коалесцированный и некоалесцированный доступ к глобальной памяти. Для проверки используется эталон на основе `std::transform` и арифметических операций стандартной библиотеки C++.
 
 ## Окружение
 
@@ -34,13 +34,15 @@ cmake --build build --target submission benchmark
 
 ```bash
 ./build/submission --help
-./build/submission --input examples/input_10.txt --output build/coalesced.tsv
-./build/submission --input examples/input_10.txt --output build/noncoalesced.tsv --mode noncoalesced
+./build/submission --input examples/input_10.txt --output build/coalesced.txt
+./build/submission --input examples/input_10.txt --output build/noncoalesced.txt --mode noncoalesced
 ```
 
-`--input` и `--output` задают пути к входному и выходному файлам. Во входном файле каждая непустая строка содержит два числа `x y`, разделённые пробельными символами. Размер векторов определяется числом пар. В выходном TSV колонки `index`, `add`, `saxpy`, `relu` разделены табуляцией. Индексы начинаются с нуля.
+`--input` и `--output` задают пути к входному и выходному файлам. Вход начинается с `N alpha`, после которых идут ровно `N` пар `x y`. Числа разделены пробельными символами, дробная часть записывается через точку. `alpha`, `x` и `y` считываются как `float`.
 
-Каждый запуск выполняет все три операции с коэффициентом SAXPY `alpha = 2`. Необязательный `--mode` выбирает `coalesced` (по умолчанию) или `noncoalesced`. Отдельный запуск с `--help` печатает справку. При пустом или некорректном входе и неверных аргументах программа возвращает код `2` и печатает ошибку в `stderr`.
+Для каждой входной пары записывается строка с тремя числами через пробел в порядке Add, SAXPY, ReLU. Выход содержит только эти строки. Значения записываются с точностью до девяти значащих цифр.
+
+`--mode` выбирает `coalesced` (по умолчанию) или `noncoalesced`. Отдельный запуск с `--help` печатает справку. Пустой или некорректный вход, `N = 0` и неверные аргументы дают код `2`. Ошибка вычисления или записи результата даёт код `1`. Сообщения об ошибках выводятся в `stderr`.
 
 ## Реализация
 
@@ -68,7 +70,9 @@ cmake --build build --target submission benchmark
 | ReLU | coalesced | `std::fmax` | 1, 255, 256, 257 | 0.000e+00 | 0 | PASS |
 | ReLU | noncoalesced | `std::fmax` | 1, 255, 256, 257 | 0.000e+00 | 0 | PASS |
 
-На готовых входах из `examples/` с 2, 10 и 100 000 элементами TSV-файлы двух режимов совпали побайтно. В каждом файле число строк результатов совпало с размером входа.
+На готовых входах из `examples/` с 2, 10 и 100 000 элементами выходные файлы двух режимов совпали побайтно. В каждом файле число строк результатов совпало с размером входа.
+
+Пример из задания с `N = 3` и `alpha = 0.5` дал ожидаемый файл в обоих режимах. Отдельно проверены `--help` с кодом `0`, неверные аргументы и входы с кодом `2`, а также ошибка открытия выходного файла с кодом `1`.
 
 ## Результаты
 
@@ -136,13 +140,13 @@ cmake --build build --target submission benchmark
 - На 10 000 000 элементов с блоком из 256 потоков коалесцированный режим ускорил ядра Add, SAXPY и ReLU в 3,14, 3,35 и 3,24 раза соответственно. Например, Add занял 0,214 мс в `coalesced` и 0,671 мс в `noncoalesced`.
 - Время полного цикла уменьшилось примерно на 3,4–4,7% при той же конфигурации. Для `coalesced` Add копирования заняли около 10,5 мс при полном времени 10,736 мс. ReLU копирует на GPU один входной вектор, поэтому её H2D занимает примерно вдвое меньше времени, чем H2D для Add и SAXPY.
 - На 10 000 000 элементов время `coalesced` Add менялось от 0,213 до 0,215 мс при смене размера блока. В `noncoalesced` Add переход с 128 на 512 потоков уменьшил время ядра с 0,902 до 0,605 мс. В этой реализации размер блока меняет число блоков, а с ним и шаг адресов в `noncoalesced`.
-- При увеличении входа с 1 до 10 млн элементов время ядра `coalesced` Add при 256 потоках выросло с 0,025 до 0,214 мс, а полный цикл — с 1,085 до 10,736 мс. Эти замеры относятся к одному GPU и закреплённой памяти CPU. Полный цикл охватывает переносы и вычисление. Чтение входного файла и запись TSV выполняются отдельно в `submission`.
+- При увеличении входа с 1 до 10 млн элементов время ядра `coalesced` Add при 256 потоках выросло с 0,025 до 0,214 мс, а полный цикл — с 1,085 до 10,736 мс. Эти замеры относятся к одному GPU и закреплённой памяти CPU. Полный цикл охватывает переносы и вычисление. Чтение и запись текстовых файлов выполняются отдельно в `submission`.
 
 ## Воспроизводимость
 
 ### Данные
 
-Готовые входы для `submission` лежат в `examples/`.
+Готовые входы для `submission` лежат в `examples/`. Коэффициент SAXPY в этих файлах равен `2`.
 
 - [input_2.txt](examples/input_2.txt) на 2 элемента в каждом векторе.
 - [input_10.txt](examples/input_10.txt) на 10 элементов, включая нули, положительные и отрицательные дробные числа.
@@ -156,9 +160,9 @@ cmake --build build --target submission benchmark
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75
 cmake --build build --target submission benchmark
 for n in 2 10 100000; do
-  ./build/submission --input "examples/input_$n.txt" --output "build/coalesced_$n.tsv"
-  ./build/submission --input "examples/input_$n.txt" --output "build/noncoalesced_$n.tsv" --mode noncoalesced
-  cmp "build/coalesced_$n.tsv" "build/noncoalesced_$n.tsv"
+  ./build/submission --input "examples/input_$n.txt" --output "build/coalesced_$n.txt"
+  ./build/submission --input "examples/input_$n.txt" --output "build/noncoalesced_$n.txt" --mode noncoalesced
+  cmp "build/coalesced_$n.txt" "build/noncoalesced_$n.txt"
 done
 ./build/benchmark --check
 ./build/benchmark 1000000 10000000

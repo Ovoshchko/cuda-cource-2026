@@ -1,6 +1,8 @@
 #include "cuda_check.h"
 #include "kernels.h"
 
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <fstream>
@@ -8,10 +10,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -23,6 +25,7 @@ struct Options {
 };
 
 struct InputVectors {
+    float alpha = 0.0f;
     std::vector<float> x;
     std::vector<float> y;
 };
@@ -61,11 +64,28 @@ Options parse_options(int argc, char **argv) {
 }
 
 void print_help() {
-    std::cout
-        << "Usage: submission --input PATH --output PATH [--mode coalesced|noncoalesced]\n"
-           "Runs Add, SAXPY, and ReLU in the selected mode (default: coalesced).\n"
-           "Input: a text file with two floats x y per line. Blank lines are ignored.\n"
-           "Output: a TSV file with columns index, add, saxpy, and relu (index starts at 0).\n";
+    std::cout << "Usage: submission --input PATH --output PATH [--mode coalesced|noncoalesced]\n"
+                 "Runs Add, SAXPY, and ReLU in the selected mode (default: coalesced).\n"
+                 "Input: N alpha followed by exactly N pairs x y, separated by whitespace. N must "
+                 "be positive.\n"
+                 "Output: x+y, alpha*x+y, and max(0,x), separated by spaces, one line per pair.\n";
+}
+
+template <typename Number> bool read_number(std::istream &file, Number &value) {
+    std::string token;
+    if (!(file >> token)) {
+        return false;
+    }
+    std::string_view text = token;
+    if (text.front() == '+') {
+        text.remove_prefix(1);
+        if (text.empty() || text.front() == '-') {
+            return false;
+        }
+    }
+    const char *end = text.data() + text.size();
+    const auto result = std::from_chars(text.data(), end, value);
+    return result.ec == std::errc{} && result.ptr == end;
 }
 
 InputVectors read_input(std::string_view path) {
@@ -75,28 +95,29 @@ InputVectors read_input(std::string_view path) {
     }
 
     InputVectors input;
-    std::size_t line_number = 0;
-    for (std::string line; std::getline(file, line);) {
-        ++line_number;
-        std::istringstream row(line);
-        if ((row >> std::ws).eof()) {
-            continue;
-        }
-
+    std::size_t n = 0;
+    if (!read_number(file, n) || n == 0 || !read_number(file, input.alpha) ||
+        !std::isfinite(input.alpha)) {
+        throw std::invalid_argument(
+            "Expected a positive N and a finite alpha at the start of input");
+    }
+    for (std::size_t i = 0; i < n; ++i) {
         float x = 0.0f;
         float y = 0.0f;
-        if (!(row >> x >> y) || !(row >> std::ws).eof()) {
-            throw std::invalid_argument("Expected two floats on input line " +
-                                        std::to_string(line_number));
+        if (!read_number(file, x) || !read_number(file, y) || !std::isfinite(x) ||
+            !std::isfinite(y)) {
+            throw std::invalid_argument("Expected two finite floats for pair " +
+                                        std::to_string(i + 1));
         }
         input.x.push_back(x);
         input.y.push_back(y);
     }
+    file >> std::ws;
     if (file.bad()) {
         throw std::invalid_argument("Cannot read input file: " + std::string(path));
     }
-    if (input.x.empty()) {
-        throw std::invalid_argument("Input must contain at least one pair of floats");
+    if (!file.eof()) {
+        throw std::invalid_argument("Unexpected data after N input pairs");
     }
     return input;
 }
@@ -114,10 +135,9 @@ void write_results(std::string_view path, const std::vector<float> &add,
         throw std::runtime_error("Cannot open output file: " + std::string(path));
     }
 
-    file << "index\tadd\tsaxpy\trelu\n"
-         << std::setprecision(std::numeric_limits<float>::max_digits10);
+    file << std::setprecision(std::numeric_limits<float>::max_digits10);
     for (std::size_t i = 0; i < add.size(); ++i) {
-        file << i << '\t' << add[i] << '\t' << saxpy[i] << '\t' << relu[i] << '\n';
+        file << add[i] << ' ' << saxpy[i] << ' ' << relu[i] << '\n';
     }
     file.close();
     if (!file) {
@@ -127,7 +147,6 @@ void write_results(std::string_view path, const std::vector<float> &add,
 
 void run_operations(const Options &options, const InputVectors &input) {
     constexpr unsigned int threads = 256;
-    constexpr float alpha = 2.0f;
     const std::size_t n = input.x.size();
     const std::size_t bytes = n * sizeof(float);
     const auto blocks = static_cast<unsigned int>(1 + (n - 1) / threads);
@@ -141,7 +160,7 @@ void run_operations(const Options &options, const InputVectors &input) {
     CUDA_CHECK(cudaMemcpy(d_y.get(), input.y.data(), bytes, cudaMemcpyHostToDevice));
 
     CUDA_CHECK(launch_add(options.mode, blocks, threads, d_x.get(), d_y.get(), d_add.get(), n));
-    CUDA_CHECK(launch_saxpy(options.mode, blocks, threads, d_x.get(), d_y.get(), alpha, n));
+    CUDA_CHECK(launch_saxpy(options.mode, blocks, threads, d_x.get(), d_y.get(), input.alpha, n));
     CUDA_CHECK(launch_relu(options.mode, blocks, threads, d_x.get(), d_relu.get(), n));
     std::vector<float> result_add(n);
     std::vector<float> result_saxpy(n);
